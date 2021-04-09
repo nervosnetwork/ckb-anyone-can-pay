@@ -13,5 +13,7 @@ jobs:
       run: git submodule update --init
     - name: Build contract
       run: make all-via-docker
+    - name: Build test extensions
+      run: make -f tests/xudt_rce/extension_scripts.Makefile all-via-docker
     - name: Run tests
       run: cargo test
