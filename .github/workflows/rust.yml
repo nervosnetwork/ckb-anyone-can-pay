@@ -19,3 +19,5 @@ jobs:
       run: cargo test
     - name: Run xudt tests
       run: cd xudt && cargo test
+    - name: Run rc_lock tests
+      run: cd tests/rc_lock_rust && cargo test

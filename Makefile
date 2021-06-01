@@ -5,7 +5,7 @@ OBJCOPY := $(TARGET)-objcopy
 CFLAGS := -fPIC -O3 -fno-builtin-printf -fno-builtin-memcmp -nostdinc -nostdlib -nostartfiles -fvisibility=hidden -fdata-sections -ffunction-sections -I deps/secp256k1/src -I deps/secp256k1 -I deps/ckb-c-std-lib -I deps/ckb-c-std-lib/libc -I deps/ckb-c-std-lib/molecule -I c -I build -Wall -Werror -Wno-nonnull -Wno-nonnull-compare -Wno-unused-function -g
 LDFLAGS := -Wl,-static -fdata-sections -ffunction-sections -Wl,--gc-sections
 SECP256K1_SRC := deps/secp256k1/src/ecmult_static_pre_context.h
-XUDT_RCE_CFLAGS=$(subst ckb-c-std-lib,ckb-c-stdlib-simulator-only2,$(CFLAGS))
+XUDT_RCE_CFLAGS=$(subst ckb-c-std-lib,ckb-c-stdlib-add-identity,$(CFLAGS))
 PROTOCOL_HEADER := c/blockchain.h
 PROTOCOL_SCHEMA := c/blockchain.mol
 PROTOCOL_VERSION := d75e4c56ffa40e17fd2fe477da3f98c5578edcd1
@@ -16,7 +16,7 @@ MOLC_VERSION := 0.7.0
 # docker pull nervos/ckb-riscv-gnu-toolchain:gnu-bionic-20191012
 BUILDER_DOCKER := nervos/ckb-riscv-gnu-toolchain@sha256:aae8a3f79705f67d505d1f1d5ddc694a4fd537ed1c7e9622420a470d59ba2ec3
 
-all: build/simple_udt build/anyone_can_pay build/always_success build/xudt_rce build/rce_validator
+all: build/simple_udt build/anyone_can_pay build/always_success build/xudt_rce build/rce_validator build/rc_lock
 
 all-via-docker: ${PROTOCOL_HEADER}
 	docker run --rm -v `pwd`:/code ${BUILDER_DOCKER} bash -c "cd /code && make"
@@ -53,9 +53,9 @@ ${PROTOCOL_SCHEMA}:
 	curl -L -o $@ ${PROTOCOL_URL}
 
 fmt:
-	clang-format -i -style=Google $(wildcard c/rce_validator.c /always_success.c c/anyone_can_pay.c c/smt.h c/rce.h c/xudt_rce.c c/rce_validator.c tests/xudt_rce/*.c tests/xudt_rce/*.h)
+	clang-format -i -style=Google $(wildcard c/rc_lock.c tests/rc_lock/rc_lock_sim.c tests/rc_lock/ckb_syscall_rc_lock_sim.h c/rce_validator.c /always_success.c c/smt.h c/rce.h c/xudt_rce.c c/rce_validator.c tests/xudt_rce/*.c tests/xudt_rce/*.h)
 	cd xudt && cargo fmt --all
-	git diff --exit-code $(wildcard c/rce_validator.c /always_success.c c/anyone_can_pay.c c/smt.h c/rce.h c/xudt_rce.c tests/xudt_rce/*.c tests/xudt_rce/*.h)
+	git diff --exit-code $(wildcard c/rc_lock.c tests/rc_lock/rc_lock_sim.c tests/rc_lock/ckb_syscall_rc_lock_sim.h c/rce_validator.c /always_success.c c/smt.h c/rce.h c/xudt_rce.c tests/xudt_rce/*.c tests/xudt_rce/*.h)
 
 mol:
 	rm -f c/xudt_rce_mol.h
@@ -64,7 +64,7 @@ mol:
 	make c/xudt_rce_mol.h
 	make c/xudt_rce_mol2.h
 	make xudt/src/xudt_rce_mol.rs
-
+	make rc_lock_mol
 
 xudt/src/xudt_rce_mol.rs: c/xudt_rce.mol
 	${MOLC} --language rust --schema-file $< | rustfmt > $@
@@ -76,12 +76,23 @@ c/xudt_rce_mol2.h: c/xudt_rce.mol
 	moleculec --language - --schema-file c/xudt_rce.mol --format json > build/blockchain_mol2.json
 	moleculec-c2 --input build/blockchain_mol2.json | clang-format -style=Google > c/xudt_rce_mol2.h
 
+rc_lock_mol:
+	${MOLC} --language rust --schema-file c/rc_lock.mol | rustfmt > tests/rc_lock_rust/src/rc_lock.rs
+	${MOLC} --language c --schema-file c/rc_lock.mol > c/rc_lock_mol.h
+	${MOLC} --language - --schema-file c/rc_lock.mol --format json > build/rc_lock_mol2.json
+	moleculec-c2 --input build/rc_lock_mol2.json | clang-format -style=Google > c/rc_lock_mol2.h
+
 build/xudt_rce: c/xudt_rce.c c/rce.h
 	$(CC) $(XUDT_RCE_CFLAGS) $(LDFLAGS) -o $@ $<
 	$(OBJCOPY) --only-keep-debug $@ $@.debug
 	$(OBJCOPY) --strip-debug --strip-all $@
 
 build/rce_validator: c/rce_validator.c c/rce.h
+	$(CC) $(XUDT_RCE_CFLAGS) $(LDFLAGS) -o $@ $<
+	$(OBJCOPY) --only-keep-debug $@ $@.debug
+	$(OBJCOPY) --strip-debug --strip-all $@
+
+build/rc_lock: c/rc_lock.c c/rce.h c/secp256k1_lock.h build/secp256k1_data_info.h $(SECP256K1_SRC)
 	$(CC) $(XUDT_RCE_CFLAGS) $(LDFLAGS) -o $@ $<
 	$(OBJCOPY) --only-keep-debug $@ $@.debug
 	$(OBJCOPY) --strip-debug --strip-all $@
@@ -112,6 +123,7 @@ clean:
 	rm -rf build/*.debug
 	rm -f build/xudt_rce
 	rm -f build/rce_validator
+	rm -f build/rc_lock
 	cd deps/secp256k1 && [ -f "Makefile" ] && make clean
 	cargo clean
 
