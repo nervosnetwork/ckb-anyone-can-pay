@@ -12,7 +12,7 @@ use ckb_types::molecule;
 use ckb_types::molecule::bytes::Bytes;
 use ckb_types::molecule::bytes::BytesMut;
 use ckb_types::packed::{
-    Byte32, BytesVecBuilder, CellDep, CellInput, CellOutput, OutPoint, Script, WitnessArgsBuilder,
+    Byte32, BytesVecBuilder, CellDep, CellInput, CellOutput, Script, WitnessArgsBuilder,
 };
 use ckb_types::prelude::{Builder, Entity, Pack};
 use lazy_static::lazy_static;
@@ -36,13 +36,13 @@ lazy_static! {
         0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8,
     ];
     pub static ref XUDT_RCE_BIN: Bytes =
-        Bytes::from(include_bytes!("../../build/xudt_rce").as_ref());
+        Bytes::from(include_bytes!("../../../build/xudt_rce").as_ref());
     pub static ref ALWAYS_SUCCESS_BIN: Bytes =
-        Bytes::from(include_bytes!("../../build/always_success").as_ref());
+        Bytes::from(include_bytes!("../../../build/always_success").as_ref());
     pub static ref EXTENSION_SCRIPT_0: Bytes =
-        Bytes::from(include_bytes!("../../build/extension_script_0").as_ref());
+        Bytes::from(include_bytes!("../../../build/extension_script_0").as_ref());
     pub static ref EXTENSION_SCRIPT_1: Bytes =
-        Bytes::from(include_bytes!("../../build/extension_script_1").as_ref());
+        Bytes::from(include_bytes!("../../../build/extension_script_1").as_ref());
     pub static ref EXTENSION_SCRIPT_RCE: Bytes = Bytes::from(RCE_HASH.as_ref());
     pub static ref SMT_EXISTING: H256 = [
         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -73,14 +73,15 @@ fn build_script(
     is_type: bool,
     bin: &Bytes,
     args: Bytes,
+    args_for_type: Option<Vec<u8>>,
 ) -> (TransactionBuilder, Script) {
-    // this hash to make type script in code unique
-    // then make "type script hash" unique, which will be code_hash in "type script"
-    let hash = ckb_hash::blake2b_256(bin);
-
     let type_script_in_code = {
-        // this args can be anything
-        let args = vec![0u8; 32];
+        let hash = ckb_hash::blake2b_256(bin);
+        let args = if let Some(a) = args_for_type {
+            a
+        } else {
+            vec![0u8; 32]
+        };
         Script::new_builder()
             .args(args.pack())
             .code_hash(hash.pack())
@@ -96,7 +97,8 @@ fn build_script(
         .build();
 
     // use "code" hash as out point, which is unique
-    let out_point = &OutPoint::new(hash.pack(), 0);
+    let mut rng = thread_rng();
+    let out_point = gen_random_out_point(&mut rng);
 
     dummy.cells.insert(out_point.clone(), (cell, bin.clone()));
 
@@ -134,9 +136,19 @@ fn build_rce_script(args: &Bytes) -> Script {
         .build()
 }
 
-fn build_xudt_args(flags: XudtFlags, scripts: &Vec<Script>) -> (Bytes, ScriptVec) {
+fn build_xudt_args(
+    flags: XudtFlags,
+    scripts: &Vec<Script>,
+    scheme: TestScheme,
+) -> (Bytes, ScriptVec) {
     let mut result = vec![];
-    let flags_num = flags as u32;
+    let mut flags_num = flags as u32;
+    if scheme == TestScheme::OwnerModeForInputType {
+        flags_num |= 0x80000000;
+    }
+    if scheme == TestScheme::OwnerModeForOutputType {
+        flags_num |= 0x40000000;
+    }
     result.extend(flags_num.to_le_bytes().as_ref());
 
     let mut builder = ScriptVecBuilder::default();
@@ -338,7 +350,7 @@ fn build_extension_data(
     wi_builder.build().as_bytes()
 }
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq)]
 pub enum TestScheme {
     None,
     OnWhiteList,
@@ -350,6 +362,8 @@ pub enum TestScheme {
     NotOnBlackList,
     BothOn,
     EmergencyHaltMode,
+    OwnerModeForInputType,
+    OwnerModeForOutputType,
 }
 
 #[derive(Copy, Clone)]
@@ -386,9 +400,23 @@ pub fn gen_tx(
         false,
         &ALWAYS_SUCCESS_BIN,
         vec![0u8; 32].into(),
+        None,
     );
     tx_builder = tx0;
     let always_success_script_hash = blake2b_256(always_success_script.as_slice());
+
+    let (tx0, always_type_script) = build_script(
+        dummy,
+        tx_builder,
+        true,
+        &ALWAYS_SUCCESS_BIN,
+        vec![0u8; 32].into(),
+        Some(vec![
+            1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ]),
+    );
+    tx_builder = tx0;
 
     let (proofs, rc_datas, proof_masks) =
         generate_proofs(scheme, &vec![always_success_script_hash]);
@@ -409,28 +437,41 @@ pub fn gen_tx(
                 extension_scripts.push(e_script);
                 rce_index = total_count;
             } else {
-                let (b0, e_script) =
-                    build_script(dummy, tx_builder, true, e_script, vec![0u8; 32].into());
+                let (b0, e_script) = build_script(
+                    dummy,
+                    tx_builder,
+                    true,
+                    e_script,
+                    vec![0u8; 32].into(),
+                    None,
+                );
                 tx_builder = b0;
                 extension_scripts.push(e_script);
             }
             total_count += 1;
         }
         // xUDT args on "args" field
-        let (xudt_args, es) = build_xudt_args(xudt_flags, &extension_scripts);
+        let (xudt_args, es) = build_xudt_args(xudt_flags, &extension_scripts, scheme);
         extension_script_vec = es;
         args = build_args(&[0u8; 32][..], &xudt_args);
     }
 
     let (mut tx_builder, xudt_rce_script) =
-        build_script(dummy, tx_builder, true, &XUDT_RCE_BIN, args);
+        build_script(dummy, tx_builder, true, &XUDT_RCE_BIN, args, None);
 
     // use owner mode
-    let xudt_rce_script = if no_input_witness {
-        let args0 = xudt_rce_script.args().raw_data();
-
-        let hash = blake2b_256(always_success_script.as_slice());
+    let xudt_rce_script = if no_input_witness
+        || scheme == TestScheme::OwnerModeForInputType
+        || scheme == TestScheme::OwnerModeForOutputType
+    {
+        let hash = if no_input_witness {
+            blake2b_256(always_success_script.as_slice())
+        } else {
+            blake2b_256(always_type_script.as_slice())
+        };
         let hash_slice = &hash[..];
+
+        let args0 = xudt_rce_script.args().raw_data();
 
         let mut result: Vec<u8> = vec![];
         result.extend_from_slice(hash_slice);
@@ -461,6 +502,16 @@ pub fn gen_tx(
             )
             .output_data(amount.to_le_bytes().pack());
     }
+    // extra output type script
+    tx_builder = tx_builder
+        .output(
+            CellOutput::new_builder()
+                .lock(always_success_script.clone())
+                .type_(Some(always_type_script.clone()).pack())
+                .capacity(dummy_capacity.pack())
+                .build(),
+        )
+        .output_data(Default::default());
 
     // setup input type script
     for i in 0..input_count {
@@ -500,6 +551,18 @@ pub fn gen_tx(
             tx_builder = tx_builder.witness(witness_args.as_bytes().pack());
         }
     }
+    // extra input type script
+    let previous_out_point = gen_random_out_point(rng);
+    let previous_output_cell = CellOutput::new_builder()
+        .capacity(dummy_capacity.pack())
+        .lock(always_success_script.clone())
+        .type_(Some(always_type_script.clone()).pack())
+        .build();
+    dummy.cells.insert(
+        previous_out_point.clone(),
+        (previous_output_cell.clone(), Bytes::default()),
+    );
+    tx_builder = tx_builder.input(CellInput::new(previous_out_point, 0));
 
     tx_builder.build()
 }
@@ -527,6 +590,7 @@ fn generate_rce_cell(
             true,
             &rc_rule,
             Bytes::copy_from_slice(random_args.as_ref()),
+            None,
         );
         tx_builder = b0;
         // rce_script is in "old" blockchain types
@@ -554,6 +618,7 @@ fn generate_rce_cell(
         true,
         &Bytes::copy_from_slice(bin),
         Bytes::copy_from_slice(random_args.as_ref()),
+        None,
     );
     tx_builder = b0;
 
@@ -684,6 +749,77 @@ fn test_simple_udt() {
     let resolved_tx = build_resolved_tx(&data_loader, &tx);
     let verify_result =
         TransactionScriptsVerifier::new(&resolved_tx, &data_loader).verify(MAX_CYCLES);
+    verify_result.expect("pass verification");
+}
+
+#[test]
+fn test_simple_udt_owner_mode() {
+    let mut rng = thread_rng();
+    let mut data_loader = DummyDataLoader::new();
+    let tx = gen_tx(
+        &mut data_loader,
+        Bytes::from(vec![0u8; 32]),
+        1,
+        1,
+        vec![100],
+        vec![200],
+        vec![],
+        TestScheme::None,
+        true,
+        XudtFlags::InArgs,
+        &mut rng,
+    );
+    let resolved_tx = build_resolved_tx(&data_loader, &tx);
+    let verify_result =
+        TransactionScriptsVerifier::new(&resolved_tx, &data_loader).verify(MAX_CYCLES);
+    verify_result.expect("pass verification");
+}
+
+#[test]
+fn test_simple_udt_owner_mode_for_input_type() {
+    let mut rng = thread_rng();
+    let mut data_loader = DummyDataLoader::new();
+    let tx = gen_tx(
+        &mut data_loader,
+        Bytes::from(vec![0u8; 32]),
+        1,
+        1,
+        vec![100],
+        vec![200],
+        vec![&EXTENSION_SCRIPT_0],
+        TestScheme::OwnerModeForInputType,
+        false,
+        XudtFlags::InArgs,
+        &mut rng,
+    );
+    let resolved_tx = build_resolved_tx(&data_loader, &tx);
+    let mut verifier = TransactionScriptsVerifier::new(&resolved_tx, &data_loader);
+    verifier.set_debug_printer(debug_printer);
+    let verify_result = verifier.verify(MAX_CYCLES);
+    verify_result.expect("pass verification");
+}
+
+#[test]
+fn test_simple_udt_owner_mode_for_output_type() {
+    let mut rng = thread_rng();
+    let mut data_loader = DummyDataLoader::new();
+    let tx = gen_tx(
+        &mut data_loader,
+        Bytes::from(vec![0u8; 32]),
+        1,
+        1,
+        vec![100],
+        vec![200],
+        vec![&EXTENSION_SCRIPT_0],
+        TestScheme::OwnerModeForOutputType,
+        false,
+        XudtFlags::InArgs,
+        &mut rng,
+    );
+    let resolved_tx = build_resolved_tx(&data_loader, &tx);
+    let mut verifier = TransactionScriptsVerifier::new(&resolved_tx, &data_loader);
+    verifier.set_debug_printer(debug_printer);
+    let verify_result = verifier.verify(MAX_CYCLES);
     verify_result.expect("pass verification");
 }
 

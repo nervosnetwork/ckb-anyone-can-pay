@@ -512,6 +512,8 @@ int ckb_load_cell_by_field(void* addr, uint64_t* len, size_t offset,
     } else {
       ASSERT(false);
     }
+  } else if (field == CKB_CELL_FIELD_TYPE_HASH) {
+    return CKB_INDEX_OUT_OF_BOUND;
   }
   return 0;
 }

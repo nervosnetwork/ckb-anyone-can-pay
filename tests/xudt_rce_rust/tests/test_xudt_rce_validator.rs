@@ -703,7 +703,7 @@ fn test_rce_validator_no_input() {
     };
 
     let rce_validator_cell_data: ckb_types::bytes::Bytes =
-        ckb_types::bytes::Bytes::from(include_bytes!("../../build/rce_validator").as_ref());
+        ckb_types::bytes::Bytes::from(include_bytes!("../../../build/rce_validator").as_ref());
     let rce_validator_cell = CellOutput::new_builder()
         .capacity(
             Capacity::bytes(rce_validator_cell_data.len())

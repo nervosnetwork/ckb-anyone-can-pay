@@ -32,9 +32,9 @@ pub const PERSONALIZATION: &[u8] = b"ckb-default-hash";
 
 lazy_static! {
     pub static ref RCE_VALIDATOR_BIN: ckb_types::bytes::Bytes =
-        ckb_types::bytes::Bytes::from(include_bytes!("../../build/rce_validator").as_ref());
+        ckb_types::bytes::Bytes::from(include_bytes!("../../../build/rce_validator").as_ref());
     pub static ref ALWAYS_SUCCESS_BIN: ckb_types::bytes::Bytes =
-        ckb_types::bytes::Bytes::from(include_bytes!("../../build/always_success").as_ref());
+        ckb_types::bytes::Bytes::from(include_bytes!("../../../build/always_success").as_ref());
     pub static ref SMT_EXISTING: H256 = H256::from([
         1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0
